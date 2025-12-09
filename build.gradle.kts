@@ -78,11 +78,14 @@ repositories {
         name = "Kotlin for Forge"
         url = uri("https://thedarkcolour.github.io/KotlinForForge/")
     }
+    mavenCentral()
 }
 
 dependencies {
     minecraft("net.minecraftforge:forge:1.20.1-47.2.0")
     implementation("thedarkcolour:kotlinforforge:4.5.0")
+    // VNC client is implemented directly using RFB protocol
+    // No external dependency needed
 }
 
 tasks.named<ProcessResources>("processResources") {
@@ -120,6 +123,53 @@ tasks.named<Jar>("jar") {
             )
         )
     }
+    
+    // Bundle QEMU binaries from system installation
+    val os = System.getProperty("os.name").lowercase()
+    val arch = System.getProperty("os.arch").lowercase()
+    
+    val qemuBinaryName = when {
+        os.contains("win") -> "qemu-system-x86_64.exe"
+        else -> "qemu-system-x86_64"
+    }
+    val qemuImgName = qemuBinaryName.replace("qemu-system-x86_64", "qemu-img")
+    
+    val qemuResourceDir = when {
+        os.contains("win") -> "qemu/windows"
+        os.contains("mac") && (arch.contains("aarch64") || arch.contains("arm64")) -> "qemu/macos-arm64"
+        os.contains("mac") -> "qemu/macos-x86_64"
+        else -> "qemu/linux"
+    }
+    
+    // Try to find QEMU from common locations
+    val possibleQemuPaths = when {
+        os.contains("mac") -> listOf("/opt/homebrew/bin/$qemuBinaryName", "/usr/local/bin/$qemuBinaryName")
+        os.contains("win") -> listOf("C:\\Program Files\\qemu\\$qemuBinaryName")
+        else -> listOf("/usr/bin/$qemuBinaryName", "/usr/local/bin/$qemuBinaryName")
+    }
+    
+    for (qemuPath in possibleQemuPaths) {
+        val qemuFile = file(qemuPath)
+        if (qemuFile.exists()) {
+            from(qemuFile) {
+                into(qemuResourceDir)
+                rename { qemuBinaryName }
+            }
+            println("Bundling QEMU from: $qemuPath")
+            
+            // Also bundle qemu-img
+            val qemuImgFile = file(qemuPath.replace(qemuBinaryName, qemuImgName))
+            if (qemuImgFile.exists()) {
+                from(qemuImgFile) {
+                    into(qemuResourceDir)
+                    rename { qemuImgName }
+                }
+                println("Bundling qemu-img from: ${qemuImgFile.absolutePath}")
+            }
+            break
+        }
+    }
+    
     finalizedBy("reobfJar")
 }
 

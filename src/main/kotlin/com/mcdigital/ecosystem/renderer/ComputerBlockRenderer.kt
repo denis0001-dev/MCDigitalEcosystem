@@ -22,6 +22,26 @@ class ScreenTexture(private val blockEntity: ComputerBlockEntity) {
     private var textureLocation: ResourceLocation? = null
     private var lastUpdate: Long = 0
     private val targetFrameTime = 16L // ~60 FPS
+    private var initialized = false
+    
+    fun initializeIfNeeded() {
+        if (!initialized && texture == null) {
+            // Create a default transparent texture (1x1 fully transparent)
+            val width = 1
+            val height = 1
+            val nativeImage = NativeImage(width, height, true) // true = use alpha channel
+            
+            // Fill with fully transparent (alpha = 0)
+            nativeImage.setPixelRGBA(0, 0, 0x00000000.toInt()) // Fully transparent
+            
+            texture = DynamicTexture(nativeImage)
+            textureLocation = ResourceLocation("mcdigitalecosystem", "dynamic/screen_${blockEntity.blockPos.asLong()}")
+            net.minecraft.client.Minecraft.getInstance().textureManager.register(textureLocation!!, texture!!)
+            texture!!.upload() // Upload immediately so it's available
+            initialized = true
+            println("[ScreenTexture] Initialized transparent base texture")
+        }
+    }
     
     fun updateFrame(frame: BufferedImage) {
         val now = System.currentTimeMillis()
@@ -30,26 +50,63 @@ class ScreenTexture(private val blockEntity: ComputerBlockEntity) {
         }
         lastUpdate = now
         
-        if (texture == null) {
+        // Ensure texture is initialized
+        if (texture == null || texture?.pixels == null) {
             val nativeImage = NativeImage(frame.width, frame.height, false)
             texture = DynamicTexture(nativeImage)
             textureLocation = ResourceLocation("mcdigitalecosystem", "dynamic/screen_${blockEntity.blockPos.asLong()}")
             net.minecraft.client.Minecraft.getInstance().textureManager.register(textureLocation!!, texture!!)
+            texture!!.upload() // Upload immediately so transparent texture is available
+            initialized = true
+            println("[ScreenTexture] Initialized transparent base texture")
+            println("[ScreenTexture] Created texture: ${frame.width}x${frame.height}")
         }
         
         val nativeImage = texture?.pixels
         if (nativeImage != null) {
-            for (y in 0 until frame.height) {
-                for (x in 0 until frame.width) {
-                    val rgb = frame.getRGB(x, y)
-                    nativeImage.setPixelRGBA(x, y, rgb)
+            // Resize if needed
+            if (nativeImage.width != frame.width || nativeImage.height != frame.height) {
+                println("[ScreenTexture] Resizing texture from ${nativeImage.width}x${nativeImage.height} to ${frame.width}x${frame.height}")
+                val newImage = NativeImage(frame.width, frame.height, false)
+                texture = DynamicTexture(newImage)
+                net.minecraft.client.Minecraft.getInstance().textureManager.register(textureLocation!!, texture!!)
+                // Continue with new image
+                val updatedImage = texture?.pixels ?: return
+                for (y in 0 until frame.height.coerceAtMost(updatedImage.height)) {
+                    for (x in 0 until frame.width.coerceAtMost(updatedImage.width)) {
+                        val rgb = frame.getRGB(x, y)
+                        // Convert RGB to RGBA (add alpha = 255)
+                        val rgba = (rgb and 0x00FFFFFF) or 0xFF000000.toInt()
+                        updatedImage.setPixelRGBA(x, y, rgba)
+                    }
                 }
+                texture?.upload()
+            } else {
+                // Same size, just update pixels
+                for (y in 0 until frame.height.coerceAtMost(nativeImage.height)) {
+                    for (x in 0 until frame.width.coerceAtMost(nativeImage.width)) {
+                        val rgb = frame.getRGB(x, y)
+                        // Convert RGB to RGBA (add alpha = 255)
+                        val rgba = (rgb and 0x00FFFFFF) or 0xFF000000.toInt()
+                        nativeImage.setPixelRGBA(x, y, rgba)
+                    }
+                }
+                texture?.upload()
             }
-            texture?.upload()
         }
     }
     
-    fun getTextureLocation(): ResourceLocation? = textureLocation
+    fun getTextureLocation(): ResourceLocation? {
+        if (!initialized || texture == null) {
+            initializeIfNeeded()
+        }
+        // Always return a valid texture location (never null)
+        if (textureLocation == null) {
+            // Fallback: create a minimal texture
+            initializeIfNeeded()
+        }
+        return textureLocation
+    }
 }
 
 object ComputerBlockRendererHelper {
@@ -65,6 +122,14 @@ object ComputerBlockRendererHelper {
     fun getScreenTexture(blockEntity: ComputerBlockEntity): ScreenTexture? {
         return screenTextures[blockEntity]
     }
+    
+    fun getOrCreateDefaultTexture(blockEntity: ComputerBlockEntity): ScreenTexture {
+        return screenTextures.getOrPut(blockEntity) {
+            ScreenTexture(blockEntity).apply {
+                initializeIfNeeded()
+            }
+        }
+    }
 }
 
 class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : BlockEntityRenderer<ComputerBlockEntity> {
@@ -77,15 +142,24 @@ class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : Bloc
         packedLight: Int,
         packedOverlay: Int
     ) {
+        // Always ensure we have a texture
         val screenTexture = ComputerBlockRendererHelper.getScreenTexture(blockEntity)
-        val textureLocation = screenTexture?.getTextureLocation() 
-            ?: ResourceLocation("mcdigitalecosystem", "textures/block/computer_screen")
+            ?: ComputerBlockRendererHelper.getOrCreateDefaultTexture(blockEntity)
+        
+        val textureLocation = screenTexture.getTextureLocation()
+        if (textureLocation == null) {
+            // Last resort: skip rendering this frame
+            return
+        }
         
         poseStack.pushPose()
         
         val state = blockEntity.blockState
-        val facing = state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.FACING) 
-            ?: Direction.NORTH
+        val facing = if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)) {
+            state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)
+        } else {
+            Direction.NORTH
+        }
         
         // Translate to center of block
         poseStack.translate(0.5, 0.5, 0.5)
@@ -124,7 +198,13 @@ class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : Bloc
         packedOverlay: Int
     ) {
         RenderSystem.setShader { GameRenderer.getPositionTexShader() }
-        RenderSystem.setShaderTexture(0, textureLocation)
+        try {
+            RenderSystem.setShaderTexture(0, textureLocation)
+        } catch (e: Exception) {
+            // If texture fails to load, use a fallback
+            System.err.println("[ComputerBlockRenderer] Failed to set texture $textureLocation: ${e.message}")
+            return
+        }
         
         val matrix = poseStack.last().pose()
         val normal = poseStack.last().normal()
@@ -132,6 +212,7 @@ class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : Bloc
         // Front face (Z = 0.01, slightly in front of block)
         val z = 0.501f
         
+        // Use cutout render type for transparency support (allows fully transparent pixels)
         val consumer = buffer.getBuffer(RenderType.entityCutout(textureLocation))
         
         // Render quad for screen - stretched to fill front face

@@ -51,14 +51,10 @@ class ComputerBlock : BaseEntityBlock(Properties.of().strength(2.0f).noOcclusion
         state: BlockState,
         blockEntityType: BlockEntityType<T>
     ): BlockEntityTicker<T>? {
-        return if (level.isClientSide) {
-            createTickerHelper(blockEntityType, com.mcdigital.ecosystem.MCDigitalEcosystem.COMPUTER_BLOCK_ENTITY.get()) { level, pos, state, blockEntity ->
-                if (blockEntity is ComputerBlockEntity) {
-                    blockEntity.tick()
-                }
+        return createTickerHelper(blockEntityType, com.mcdigital.ecosystem.MCDigitalEcosystem.COMPUTER_BLOCK_ENTITY.get()) { level, pos, state, blockEntity ->
+            if (blockEntity is ComputerBlockEntity) {
+                blockEntity.tick()
             }
-        } else {
-            null
         }
     }
 

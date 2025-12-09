@@ -1,11 +1,11 @@
 package com.mcdigital.ecosystem.input
 
-import com.mcdigital.ecosystem.spice.SpiceClient
+import com.mcdigital.ecosystem.vnc.VNCClientWrapper
 import net.minecraft.client.Minecraft
 import net.minecraft.client.player.LocalPlayer
 import org.lwjgl.glfw.GLFW
 
-class InputHandler(private val spiceClient: SpiceClient) {
+class InputHandler(private val vncClient: VNCClientWrapper) {
     private var isCapturing = false
     private val keyStates = mutableMapOf<Int, Boolean>()
     private var lastMouseX = 0.0
@@ -21,7 +21,7 @@ class InputHandler(private val spiceClient: SpiceClient) {
         // Release all pressed keys
         keyStates.forEach { (key, _) ->
             if (key != -1) {
-                spiceClient.sendKeyEvent(key, false)
+                vncClient.sendKeyEvent(key, false)
             }
         }
         keyStates.clear()
@@ -44,13 +44,13 @@ class InputHandler(private val spiceClient: SpiceClient) {
         val window = Minecraft.getInstance().window.window
         val keyMap = getKeyMap()
         
-        keyMap.forEach { (mcKey, spiceKey) ->
+        keyMap.forEach { (mcKey, vncKey) ->
             val isPressed = GLFW.glfwGetKey(window, mcKey) == GLFW.GLFW_PRESS
-            val wasPressed = keyStates[spiceKey] ?: false
+            val wasPressed = keyStates[vncKey] ?: false
             
             if (isPressed != wasPressed) {
-                spiceClient.sendKeyEvent(spiceKey, isPressed)
-                keyStates[spiceKey] = isPressed
+                vncClient.sendKeyEvent(vncKey, isPressed)
+                keyStates[vncKey] = isPressed
             }
         }
     }
@@ -65,7 +65,7 @@ class InputHandler(private val spiceClient: SpiceClient) {
             val deltaY = (mouseY - lastMouseY).toInt()
             
             if (deltaX != 0 || deltaY != 0) {
-                spiceClient.sendMouseMove(deltaX, deltaY)
+                vncClient.sendMouseMove(deltaX, deltaY)
             }
             
             lastMouseX = mouseX
@@ -88,13 +88,13 @@ class InputHandler(private val spiceClient: SpiceClient) {
         val wasPressed = keyStates[key] ?: false
         
         if (pressed != wasPressed) {
-            spiceClient.sendMouseButton(button, pressed)
+            vncClient.sendMouseButton(button, pressed)
             keyStates[key] = pressed
         }
     }
 
     private fun getKeyMap(): Map<Int, Int> {
-        // Map Minecraft/GLFW key codes to SPICE key codes
+        // Map Minecraft/GLFW key codes to VNC key codes (X11 key codes)
         // This is a simplified mapping - full implementation would map all keys
         return mapOf(
             GLFW.GLFW_KEY_A to 0x1E, // A
