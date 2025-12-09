@@ -191,50 +191,89 @@ class VMManager {
             outputThread.isDaemon = true
             outputThread.start()
             
-            runningVMs[blockPos] = process
+            // Wait a bit for QEMU to daemonize (it forks and exits immediately)
+            Thread.sleep(500)
+            
+            // For daemonized processes, the parent process exits immediately
+            // We need to check if the VNC port is listening instead
+            // Store the port mapping even though the process is gone
+            runningVMs[blockPos] = process // Keep reference for cleanup, but it will be dead
             vmPorts[blockPos] = port
             vmQMPPorts[blockPos] = qmpPort
             vmMonitorPorts[blockPos] = monitorPort
             
-            // Wait a bit for QEMU to start and VNC server to be ready
-            // QEMU needs time to initialize the VNC server
-            Thread.sleep(2000) // Increased to 2 seconds to give VNC server time to start
+            // Wait a bit more for QEMU to start and VNC server to be ready
+            Thread.sleep(2000) // Give VNC server time to start
             
-            // Check if process is still alive
-            if (!process.isAlive) {
-                val exitCode = process.exitValue()
-                val error = try {
-                    process.errorStream.bufferedReader().use { it.readText() }
-                } catch (e: Exception) {
-                    "Could not read error stream: ${e.message}"
-                }
-                val output = try {
-                    process.inputStream.bufferedReader().use { it.readText() }
-                } catch (e: Exception) {
-                    "Could not read output stream: ${e.message}"
-                }
-                
-                // Provide helpful error message for VNC issues
-                if (error.contains("vnc") || error.contains("invalid option")) {
-                    throw IOException(
-                        "QEMU VNC support error (exit code $exitCode).\n" +
-                        "This QEMU build may not have VNC enabled.\n" +
-                        "Error: $error\n" +
-                        "Output: $output\n" +
-                        "Command: ${command.joinToString(" ")}\n" +
-                        "Please ensure QEMU has VNC support (standard QEMU builds include it).",
-                        null
-                    )
-                }
-                
-                throw IOException("QEMU process exited immediately (exit code $exitCode). Error: $error\nOutput: $output\nCommand: ${command.joinToString(" ")}")
+            // Check if VNC port is listening (better check for daemonized QEMU)
+            val portListening = try {
+                val testSocket = java.net.Socket()
+                testSocket.connect(java.net.InetSocketAddress("127.0.0.1", port), 100)
+                testSocket.close()
+                true
+            } catch (e: Exception) {
+                false
             }
             
-            // Verify the process is actually running
-            println("[VMManager] QEMU process started, PID: ${process.pid()}, isAlive: ${process.isAlive}")
+            if (!portListening) {
+                // Port not listening, QEMU might have failed
+                // Check if process exited with error
+                if (!process.isAlive) {
+                    val exitCode = process.exitValue()
+                    if (exitCode != 0) {
+                        val error = try {
+                            process.errorStream.bufferedReader().use { it.readText() }
+                        } catch (e: Exception) {
+                            "Could not read error stream: ${e.message}"
+                        }
+                        val output = try {
+                            process.inputStream.bufferedReader().use { it.readText() }
+                        } catch (e: Exception) {
+                            "Could not read output stream: ${e.message}"
+                        }
+                        
+                        // Provide helpful error message for VNC issues
+                        if (error.contains("vnc") || error.contains("invalid option") || output.contains("vnc")) {
+                            throw IOException(
+                                "QEMU VNC support error (exit code $exitCode).\n" +
+                                "This QEMU build may not have VNC enabled.\n" +
+                                "Error: $error\n" +
+                                "Output: $output\n" +
+                                "Command: ${command.joinToString(" ")}\n" +
+                                "Please ensure QEMU has VNC support (standard QEMU builds include it).",
+                                null
+                            )
+                        }
+                        
+                        throw IOException("QEMU process exited immediately (exit code $exitCode). Error: $error\nOutput: $output\nCommand: ${command.joinToString(" ")}")
+                    }
+                }
+                // If process is alive or exited with 0, but port not listening, QEMU might still be starting
+                // Try one more time after a delay
+                Thread.sleep(1000)
+                val portListeningRetry = try {
+                    val testSocket = java.net.Socket()
+                    testSocket.connect(java.net.InetSocketAddress("127.0.0.1", port), 100)
+                    testSocket.close()
+                    true
+                } catch (e: Exception) {
+                    false
+                }
+                if (!portListeningRetry) {
+                    val error = try {
+                        process.errorStream.bufferedReader().use { it.readText() }
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    val output = try {
+                        process.inputStream.bufferedReader().use { it.readText() }
+                    } catch (e: Exception) {
+                        ""
+                    }
+                    throw IOException("QEMU daemonized but VNC port $port is not listening. QEMU may have failed to start.\nError: $error\nOutput: $output")
+                }
+            }
             
-            // Check if VNC port is actually listening (give it a bit more time)
-            Thread.sleep(1000)
             println("[VMManager] VM should be running on VNC port $port (display ${port - 5900})")
             
             return port
@@ -432,8 +471,18 @@ class VMManager {
     }
     
     fun isVMRunning(blockPos: BlockPos): Boolean {
-        val process = runningVMs[blockPos]
-        return process != null && process.isAlive
+        val port = vmPorts[blockPos] ?: return false
+        
+        // For daemonized QEMU, the process exits immediately but QEMU keeps running
+        // Check if the VNC port is listening instead
+        return try {
+            val socket = java.net.Socket()
+            socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 100)
+            socket.close()
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 }
 

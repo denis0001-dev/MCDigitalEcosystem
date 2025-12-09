@@ -26,20 +26,26 @@ class ScreenTexture(private val blockEntity: ComputerBlockEntity) {
     
     fun initializeIfNeeded() {
         if (!initialized && texture == null) {
-            // Create a default transparent texture (1x1 fully transparent)
-            val width = 1
-            val height = 1
+            // Create a default texture with a visible placeholder (black with slight transparency)
+            // This ensures something is visible even before frames arrive
+            val width = 64
+            val height = 64
             val nativeImage = NativeImage(width, height, true) // true = use alpha channel
             
-            // Fill with fully transparent (alpha = 0)
-            nativeImage.setPixelRGBA(0, 0, 0x00000000.toInt()) // Fully transparent
+            // Fill with a dark gray color (slightly visible) so we know the texture is working
+            val placeholderColor = 0x80000000.toInt() // Dark gray with 50% opacity
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    nativeImage.setPixelRGBA(x, y, placeholderColor)
+                }
+            }
             
             texture = DynamicTexture(nativeImage)
             textureLocation = ResourceLocation("mcdigitalecosystem", "dynamic/screen_${blockEntity.blockPos.asLong()}")
             net.minecraft.client.Minecraft.getInstance().textureManager.register(textureLocation!!, texture!!)
             texture!!.upload() // Upload immediately so it's available
             initialized = true
-            println("[ScreenTexture] Initialized transparent base texture")
+            println("[ScreenTexture] Initialized placeholder texture: ${width}x${height}")
         }
     }
     
@@ -167,7 +173,7 @@ class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : Bloc
         // Rotate to face the correct direction
         when (facing) {
             Direction.NORTH -> {
-                // Default orientation
+                // Default orientation - screen faces north (negative Z)
             }
             Direction.SOUTH -> {
                 poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180f))
@@ -198,28 +204,38 @@ class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : Bloc
         packedOverlay: Int
     ) {
         RenderSystem.setShader { GameRenderer.getPositionTexShader() }
+        
+        // Bind the texture - this will load it if not already loaded
         try {
             RenderSystem.setShaderTexture(0, textureLocation)
         } catch (e: Exception) {
-            // If texture fails to load, use a fallback
-            System.err.println("[ComputerBlockRenderer] Failed to set texture $textureLocation: ${e.message}")
+            // Texture not registered yet, skip rendering this frame
+            System.err.println("[ComputerBlockRenderer] Texture $textureLocation not available: ${e.message}")
             return
         }
+        
+        RenderSystem.enableBlend()
+        RenderSystem.defaultBlendFunc()
+        RenderSystem.enableDepthTest()
+        RenderSystem.depthMask(false) // Allow transparency
         
         val matrix = poseStack.last().pose()
         val normal = poseStack.last().normal()
         
-        // Front face (Z = 0.01, slightly in front of block)
+        // Front face - render slightly in front of block face (z = 0.501)
         val z = 0.501f
         
-        // Use cutout render type for transparency support (allows fully transparent pixels)
-        val consumer = buffer.getBuffer(RenderType.entityCutout(textureLocation))
+        // Use translucent render type for proper transparency handling
+        val consumer = buffer.getBuffer(RenderType.entityTranslucent(textureLocation))
         
         // Render quad for screen - stretched to fill front face
-        addVertex(consumer, matrix, normal, 0.0f, 0.0f, z, 0f, 0f, packedLight, packedOverlay)
-        addVertex(consumer, matrix, normal, 1.0f, 0.0f, z, 1f, 0f, packedLight, packedOverlay)
-        addVertex(consumer, matrix, normal, 1.0f, 1.0f, z, 1f, 1f, packedLight, packedOverlay)
-        addVertex(consumer, matrix, normal, 0.0f, 1.0f, z, 0f, 1f, packedLight, packedOverlay)
+        // Note: UV coordinates are flipped (v: 1f, 0f) to match Minecraft's texture coordinate system
+        addVertex(consumer, matrix, normal, 0.0f, 0.0f, z, 0f, 1f, packedLight, packedOverlay)
+        addVertex(consumer, matrix, normal, 1.0f, 0.0f, z, 1f, 1f, packedLight, packedOverlay)
+        addVertex(consumer, matrix, normal, 1.0f, 1.0f, z, 1f, 0f, packedLight, packedOverlay)
+        addVertex(consumer, matrix, normal, 0.0f, 1.0f, z, 0f, 0f, packedLight, packedOverlay)
+        
+        RenderSystem.depthMask(true) // Restore depth mask
     }
     
     private fun addVertex(

@@ -59,7 +59,7 @@ class ComputerBlock : BaseEntityBlock(Properties.of().strength(2.0f).noOcclusion
     }
 
     override fun getRenderShape(state: BlockState): RenderShape {
-        return RenderShape.MODEL
+        return RenderShape.ENTITYBLOCK_ANIMATED
     }
 
     override fun use(

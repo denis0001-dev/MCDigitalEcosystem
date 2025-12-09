@@ -1,10 +1,10 @@
 {
   "parent": "block/cube",
   "textures": {
-    "particle": "mcdigitalecosystem:block/computer_screen",
+    "particle": "minecraft:block/barrier",
     "down": "minecraft:block/barrier",
     "up": "minecraft:block/barrier",
-    "north": "mcdigitalecosystem:block/computer_screen",
+    "north": "minecraft:block/barrier",
     "south": "minecraft:block/barrier",
     "east": "minecraft:block/barrier",
     "west": "minecraft:block/barrier"
