@@ -11,7 +11,6 @@ import net.minecraft.world.item.Item
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.level.block.entity.BlockEntityType
 import net.minecraftforge.api.distmarker.Dist
-import net.minecraftforge.client.event.EntityRenderersEvent
 import net.minecraftforge.eventbus.api.SubscribeEvent
 import net.minecraftforge.fml.common.Mod
 import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent
@@ -59,7 +58,7 @@ object MCDigitalEcosystem {
     object ClientModEvents {
         @SubscribeEvent
         fun onClientSetup(event: FMLClientSetupEvent) {
-            BlockEntityRenderers.register(COMPUTER_BLOCK_ENTITY.get()) { ComputerBlockRenderer(it) }
+            BlockEntityRenderers.register(COMPUTER_BLOCK_ENTITY.get()) { ComputerBlockRenderer() }
         }
     }
 }

@@ -1,14 +1,19 @@
 package com.mcdigital.ecosystem.vm
 
 import com.mcdigital.ecosystem.config.VMConfig
+import com.mcdigital.ecosystem.utils.readErrorOutput
 import net.minecraft.core.BlockPos
 import java.io.File
 import java.io.IOException
+import java.io.PrintWriter
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.concurrent.thread
 
 class VMManager {
     private val runningVMs = ConcurrentHashMap<BlockPos, Process>()
@@ -106,6 +111,17 @@ class VMManager {
         return null
     }
 
+    private fun testQEMUSocket(port: Int) = try {
+        Socket().apply {
+            connect(InetSocketAddress("127.0.0.1", port), 100)
+            close()
+        }
+
+        true
+    } catch (_: Exception) {
+        false
+    }
+
     fun startVM(blockPos: BlockPos, stateName: String? = null): Int {
         if (runningVMs.containsKey(blockPos)) {
             return vmPorts[blockPos] ?: 0
@@ -179,17 +195,13 @@ class VMManager {
             val process = processBuilder.start()
             
             // Start a thread to read output in real-time
-            val outputThread = Thread {
-                try {
+            thread(isDaemon = true) {
+                runCatching {
                     process.inputStream.bufferedReader().forEachLine { line ->
                         println("[VMManager] QEMU output: $line")
                     }
-                } catch (e: Exception) {
-                    // Stream closed, that's okay
                 }
             }
-            outputThread.isDaemon = true
-            outputThread.start()
             
             // Wait a bit for QEMU to daemonize (it forks and exits immediately)
             Thread.sleep(500)
@@ -206,14 +218,7 @@ class VMManager {
             Thread.sleep(2000) // Give VNC server time to start
             
             // Check if VNC port is listening (better check for daemonized QEMU)
-            val portListening = try {
-                val testSocket = java.net.Socket()
-                testSocket.connect(java.net.InetSocketAddress("127.0.0.1", port), 100)
-                testSocket.close()
-                true
-            } catch (e: Exception) {
-                false
-            }
+            val portListening = testQEMUSocket(port)
             
             if (!portListening) {
                 // Port not listening, QEMU might have failed
@@ -248,29 +253,15 @@ class VMManager {
                         throw IOException("QEMU process exited immediately (exit code $exitCode). Error: $error\nOutput: $output\nCommand: ${command.joinToString(" ")}")
                     }
                 }
+
                 // If process is alive or exited with 0, but port not listening, QEMU might still be starting
                 // Try one more time after a delay
                 Thread.sleep(1000)
-                val portListeningRetry = try {
-                    val testSocket = java.net.Socket()
-                    testSocket.connect(java.net.InetSocketAddress("127.0.0.1", port), 100)
-                    testSocket.close()
-                    true
-                } catch (e: Exception) {
-                    false
-                }
+
+                val portListeningRetry = testQEMUSocket(port)
+
                 if (!portListeningRetry) {
-                    val error = try {
-                        process.errorStream.bufferedReader().use { it.readText() }
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    val output = try {
-                        process.inputStream.bufferedReader().use { it.readText() }
-                    } catch (e: Exception) {
-                        ""
-                    }
-                    throw IOException("QEMU daemonized but VNC port $port is not listening. QEMU may have failed to start.\nError: $error\nOutput: $output")
+                    throw IOException("QEMU daemonized but VNC port $port is not listening. QEMU may have failed to start.\nOutput: ${process.readErrorOutput()}")
                 }
             }
             
@@ -288,6 +279,7 @@ class VMManager {
                     "  Linux: sudo apt-get install qemu-system-x86 qemu-utils\n" +
                     "  Windows: Download from https://www.qemu.org/download/"
                 System.err.println(errorMsg)
+
                 throw IOException(errorMsg, e)
             }
             e.printStackTrace()
@@ -300,12 +292,10 @@ class VMManager {
             return false
         }
         
-        val qemuImgPath = qemuPath?.replace("qemu-system-x86_64", "qemu-img")
-            ?: qemuPath?.replace("qemu-system-x86_64.exe", "qemu-img.exe")
-            ?: "qemu-img"
-        
         val command = listOf(
-            qemuImgPath,
+            qemuPath?.replace("qemu-system-x86_64", "qemu-img")
+                ?: qemuPath?.replace("qemu-system-x86_64.exe", "qemu-img.exe")
+                ?: "qemu-img",
             "snapshot",
             "-l",
             diskFile.absolutePath
@@ -313,7 +303,7 @@ class VMManager {
         
         return try {
             val process = ProcessBuilder(command).start()
-            val output = process.inputStream.bufferedReader().readText()
+            val output = process.inputStream.bufferedReader().use { it.readText() }
             val exitCode = process.waitFor()
             
             if (exitCode == 0) {
@@ -381,15 +371,9 @@ class VMManager {
         vmMonitorPorts.remove(blockPos)
         
         if (process != null) {
-            // Send shutdown command via QMP over TCP
-            if (qmpPort != null) {
-                try {
-                    sendQMPCommandTCP(qmpPort, """{"execute": "quit"}""")
-                } catch (e: Exception) {
-                    // Force kill if QMP fails
-                    process.destroyForcibly()
-                }
-            } else {
+            try {
+                sendQMPCommandTCP(qmpPort!!, """{"execute": "quit"}""")
+            } catch (_: Exception) {
                 process.destroyForcibly()
             }
         }
@@ -403,29 +387,31 @@ class VMManager {
         }
     }
 
+    @Suppress("SameParameterValue")
     private fun sendQMPCommandTCP(port: Int, command: String) {
         try {
-            val socket = java.net.Socket("127.0.0.1", port)
-            socket.soTimeout = 5000 // 5 second timeout
-            val writer = java.io.PrintWriter(
-                java.io.OutputStreamWriter(socket.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8),
-                true
-            )
-            // QMP requires a greeting handshake first
-            val reader = java.io.BufferedReader(
-                java.io.InputStreamReader(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8)
-            )
-            // Read QMP greeting
-            reader.readLine()
-            // Send capabilities negotiation
-            writer.println("""{"execute": "qmp_capabilities"}""")
-            reader.readLine()
-            // Send actual command
-            writer.println(command)
-            reader.readLine()
-            writer.close()
-            reader.close()
-            socket.close()
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 5000 // 5 second timeout
+
+                val writer = PrintWriter(
+                    socket.getOutputStream().writer(),
+                    true
+                )
+                // QMP requires a greeting handshake first
+                val reader = socket.getInputStream().bufferedReader()
+
+                // Read QMP greeting
+                reader.readLine()
+                // Send capabilities negotiation
+                writer.println("{\"execute\": \"qmp_capabilities\"}")
+                reader.readLine()
+                // Send actual command
+                writer.println(command)
+                reader.readLine()
+
+                writer.close()
+                reader.close()
+            }
         } catch (e: Exception) {
             System.err.println("[VMManager] Error sending QMP command: ${e.message}")
             e.printStackTrace()
@@ -434,27 +420,22 @@ class VMManager {
 
     private fun sendMonitorCommandTCP(port: Int, command: String) {
         try {
-            val socket = java.net.Socket("127.0.0.1", port)
-            socket.soTimeout = 5000 // 5 second timeout
-            val writer = java.io.PrintWriter(
-                java.io.OutputStreamWriter(socket.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8),
-                true
-            )
-            writer.println(command)
-            writer.flush()
-            // Read response (monitor commands echo back)
-            val reader = java.io.BufferedReader(
-                java.io.InputStreamReader(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8)
-            )
-            // Read and discard response
-            try {
-                reader.readLine()
-            } catch (e: Exception) {
-                // Ignore read errors
+            Socket("127.0.0.1", port).use { socket ->
+                socket.soTimeout = 5000 // 5 second timeout
+
+                PrintWriter(
+                    socket.getOutputStream().writer(),
+                    true
+                ).use { writer ->
+                    writer.println(command)
+                    writer.flush()
+
+                    // Read response (monitor commands echo back)
+                    socket.getInputStream().bufferedReader().use {
+                        runCatching { it.readLine() }
+                    }
+                }
             }
-            writer.close()
-            reader.close()
-            socket.close()
         } catch (e: Exception) {
             System.err.println("[VMManager] Error sending monitor command: ${e.message}")
             e.printStackTrace()
@@ -471,18 +452,7 @@ class VMManager {
     }
     
     fun isVMRunning(blockPos: BlockPos): Boolean {
-        val port = vmPorts[blockPos] ?: return false
-        
-        // For daemonized QEMU, the process exits immediately but QEMU keeps running
-        // Check if the VNC port is listening instead
-        return try {
-            val socket = java.net.Socket()
-            socket.connect(java.net.InetSocketAddress("127.0.0.1", port), 100)
-            socket.close()
-            true
-        } catch (e: Exception) {
-            false
-        }
+        return testQEMUSocket(vmPorts[blockPos] ?: return false)
     }
 }
 

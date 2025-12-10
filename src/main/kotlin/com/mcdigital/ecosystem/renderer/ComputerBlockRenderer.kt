@@ -9,7 +9,6 @@ import net.minecraft.client.renderer.GameRenderer
 import net.minecraft.client.renderer.MultiBufferSource
 import net.minecraft.client.renderer.RenderType
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer
-import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider
 import net.minecraft.client.renderer.texture.DynamicTexture
 import net.minecraft.core.Direction
 import net.minecraft.resources.ResourceLocation
@@ -138,8 +137,7 @@ object ComputerBlockRendererHelper {
     }
 }
 
-class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : BlockEntityRenderer<ComputerBlockEntity> {
-    
+class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
     override fun render(
         blockEntity: ComputerBlockEntity,
         partialTick: Float,
@@ -151,13 +149,9 @@ class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : Bloc
         // Always ensure we have a texture
         val screenTexture = ComputerBlockRendererHelper.getScreenTexture(blockEntity)
             ?: ComputerBlockRendererHelper.getOrCreateDefaultTexture(blockEntity)
-        
-        val textureLocation = screenTexture.getTextureLocation()
-        if (textureLocation == null) {
-            // Last resort: skip rendering this frame
-            return
-        }
-        
+
+        val textureLocation = screenTexture.getTextureLocation() ?: return // Last resort: skip rendering this frame
+
         poseStack.pushPose()
         
         val state = blockEntity.blockState
@@ -238,6 +232,7 @@ class ComputerBlockRenderer(context: BlockEntityRendererProvider.Context) : Bloc
         RenderSystem.depthMask(true) // Restore depth mask
     }
     
+    @Suppress("SameParameterValue")
     private fun addVertex(
         consumer: VertexConsumer,
         matrix: Matrix4f,

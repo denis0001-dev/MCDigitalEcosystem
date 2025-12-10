@@ -3,6 +3,7 @@
 build/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
+.kotlin
 
 # IntelliJ IDEA
 .idea/
@@ -29,6 +30,7 @@ logs/
 crash-reports/
 debug/
 *.log
+
 
 # QEMU extracted binaries
 qemu/

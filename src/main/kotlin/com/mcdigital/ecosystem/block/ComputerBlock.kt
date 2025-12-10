@@ -1,5 +1,6 @@
 package com.mcdigital.ecosystem.block
 
+import com.mcdigital.ecosystem.MCDigitalEcosystem.COMPUTER_BLOCK_ENTITY
 import com.mcdigital.ecosystem.blockentity.ComputerBlockEntity
 import net.minecraft.core.BlockPos
 import net.minecraft.core.Direction
@@ -12,13 +13,13 @@ import net.minecraft.world.level.block.BaseEntityBlock
 import net.minecraft.world.level.block.Block
 import net.minecraft.world.level.block.RenderShape
 import net.minecraft.world.level.block.Rotation
+import net.minecraft.world.level.block.entity.BlockEntity
+import net.minecraft.world.level.block.entity.BlockEntityTicker
+import net.minecraft.world.level.block.entity.BlockEntityType
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.block.state.StateDefinition
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.block.state.properties.DirectionProperty
-import net.minecraft.world.level.block.entity.BlockEntity
-import net.minecraft.world.level.block.entity.BlockEntityTicker
-import net.minecraft.world.level.block.entity.BlockEntityType
 import net.minecraft.world.phys.BlockHitResult
 
 class ComputerBlock : BaseEntityBlock(Properties.of().strength(2.0f).noOcclusion()) {
@@ -42,7 +43,7 @@ class ComputerBlock : BaseEntityBlock(Properties.of().strength(2.0f).noOcclusion
         return state.setValue(FACING, rotation.rotate(state.getValue(FACING)))
     }
     
-    override fun newBlockEntity(pos: BlockPos, state: BlockState): BlockEntity? {
+    override fun newBlockEntity(pos: BlockPos, state: BlockState): BlockEntity {
         return ComputerBlockEntity(pos, state)
     }
 
@@ -51,7 +52,10 @@ class ComputerBlock : BaseEntityBlock(Properties.of().strength(2.0f).noOcclusion
         state: BlockState,
         blockEntityType: BlockEntityType<T>
     ): BlockEntityTicker<T>? {
-        return createTickerHelper(blockEntityType, com.mcdigital.ecosystem.MCDigitalEcosystem.COMPUTER_BLOCK_ENTITY.get()) { level, pos, state, blockEntity ->
+        return createTickerHelper(
+            blockEntityType,
+            COMPUTER_BLOCK_ENTITY.get()
+        ) { _, _, _, blockEntity ->
             if (blockEntity is ComputerBlockEntity) {
                 blockEntity.tick()
             }

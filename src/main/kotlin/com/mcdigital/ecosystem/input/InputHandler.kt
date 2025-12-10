@@ -2,7 +2,6 @@ package com.mcdigital.ecosystem.input
 
 import com.mcdigital.ecosystem.vnc.VNCClientWrapper
 import net.minecraft.client.Minecraft
-import net.minecraft.client.player.LocalPlayer
 import org.lwjgl.glfw.GLFW
 
 class InputHandler(private val vncClient: VNCClientWrapper) {

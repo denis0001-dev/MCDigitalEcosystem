@@ -175,8 +175,8 @@ class VNCClientWrapper(private val host: String, private val port: Int, private 
             output?.writeBoolean(false) // incremental
             output?.writeShort(0) // x
             output?.writeShort(0) // y
-            output?.writeShort(frameWidth.toInt()) // width
-            output?.writeShort(frameHeight.toInt()) // height
+            output?.writeShort(frameWidth) // width
+            output?.writeShort(frameHeight) // height
             output?.flush()
         } catch (e: Exception) {
             System.err.println("[VNCClient] Error requesting update: ${e.message}")
@@ -187,21 +187,17 @@ class VNCClientWrapper(private val host: String, private val port: Int, private 
         val input = this.input ?: return
         
         // Read server message type
-        val messageType = input.readUnsignedByte()
-        
-        when (messageType) {
+        when (val messageType = input.readUnsignedByte()) {
             0 -> { // FramebufferUpdate
                 input.readByte() // padding
                 val numRects = input.readUnsignedShort()
                 
-                for (i in 0 until numRects) {
+                repeat(numRects) {
                     val x = input.readUnsignedShort()
                     val y = input.readUnsignedShort()
                     val width = input.readUnsignedShort()
                     val height = input.readUnsignedShort()
-                    val encoding = input.readInt()
-                    
-                    when (encoding) {
+                    when (val encoding = input.readInt()) {
                         0 -> { // Raw encoding
                             val pixels = ByteArray(width * height * 4)
                             input.readFully(pixels)
@@ -364,8 +360,4 @@ class VNCClientWrapper(private val host: String, private val port: Int, private 
     }
 
     fun isConnected(): Boolean = connected.get() && socket != null && !socket!!.isClosed
-    
-    fun getWidth(): Int = frameWidth
-    
-    fun getHeight(): Int = frameHeight
 }

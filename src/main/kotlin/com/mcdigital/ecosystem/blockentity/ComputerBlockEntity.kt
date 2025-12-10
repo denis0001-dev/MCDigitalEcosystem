@@ -3,8 +3,8 @@ package com.mcdigital.ecosystem.blockentity
 import com.mcdigital.ecosystem.MCDigitalEcosystem
 import com.mcdigital.ecosystem.input.InputHandler
 import com.mcdigital.ecosystem.persistence.VMStateManager
-import com.mcdigital.ecosystem.vnc.VNCClientWrapper
 import com.mcdigital.ecosystem.vm.VMManager
+import com.mcdigital.ecosystem.vnc.VNCClientWrapper
 import net.minecraft.core.BlockPos
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.network.protocol.Packet
@@ -157,7 +157,7 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) : BlockEntity(
             val stateName = stateManager!!.getStateName()
             vncPort = vmManager!!.startVM(
                 blockPos = blockPos,
-                stateName = if (stateName.isNotEmpty()) stateName else null
+                stateName = stateName.ifEmpty { null }
             )
             if (vncPort > 0) {
                 isRunning = true
@@ -192,10 +192,6 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) : BlockEntity(
             vmManager!!.saveVMState(blockPos, stateName)
         }
     }
-
-    fun getVNCPort(): Int = vncPort
-    fun isVMRunning(): Boolean = isRunning
-    fun getFocusedPlayer(): Player? = focusedPlayer
 
     override fun saveAdditional(tag: CompoundTag) {
         super.saveAdditional(tag)
@@ -243,7 +239,7 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) : BlockEntity(
             } else if (vncPort == 0) {
                 // VM process is running but port is 0, something is wrong - restart
                 println("[ComputerBlockEntity] Server: VM process is running but port is 0, restarting...")
-                vmManager?.stopVM(blockPos)
+                vmManager.stopVM(blockPos)
                 isRunning = false
                 startVM()
             } else {
