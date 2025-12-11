@@ -111,6 +111,55 @@ class VMManager {
         return null
     }
 
+    private fun findOVMFFirmware(vararg filenames: String): String? {
+        val os = System.getProperty("os.name").lowercase()
+        
+        // Common OVMF firmware locations
+        val baseSearchPaths = when {
+            os.contains("mac") -> listOf(
+                "/opt/homebrew/share/qemu",
+                "/usr/local/share/qemu"
+            )
+            os.contains("win") -> listOf(
+                "C:\\Program Files\\qemu",
+                "C:\\qemu"
+            )
+            else -> listOf(
+                "/usr/share/qemu",
+                "/usr/share/OVMF",
+                "/usr/local/share/qemu"
+            )
+        }
+        
+        // Handle Homebrew Cellar paths (versioned directories) for macOS
+        val cellarPaths = if (os.contains("mac")) {
+            val cellarBase = File("/opt/homebrew/Cellar/qemu")
+            if (cellarBase.exists() && cellarBase.isDirectory) {
+                cellarBase.listFiles()?.filter { it.isDirectory }?.map { 
+                    File(it, "share/qemu").absolutePath
+                } ?: emptyList()
+            } else {
+                emptyList()
+            }
+        } else {
+            emptyList()
+        }
+        
+        val searchPaths = baseSearchPaths + cellarPaths
+        
+        // Search for firmware files
+        for (filename in filenames) {
+            for (basePath in searchPaths) {
+                val path = File(basePath, filename)
+                if (path.exists() && path.isFile) {
+                    return path.absolutePath
+                }
+            }
+        }
+        
+        return null
+    }
+
     private fun testQEMUSocket(port: Int) = try {
         Socket().apply {
             connect(InetSocketAddress("127.0.0.1", port), 100)
@@ -145,12 +194,40 @@ class VMManager {
         val qmpPort = port + 1
         val monitorPort = port + 2
 
-        // Build QEMU command with VNC support
+        // Build QEMU command with VNC support and UEFI firmware
         // Format: -vnc :display (where display = port - 5900)
         val command = buildList {
             add(qemuPath ?: "qemu-system-x86_64")
             add("-m")
             add("${config.ramMB}M")
+            
+            // Use Q35 machine type for better UEFI support
+            add("-machine")
+            add("q35")
+            
+            // UEFI firmware (OVMF) - try to find OVMF firmware files
+            val ovmfCode = findOVMFFirmware("OVMF_CODE.fd", "OVMF_CODE.secboot.fd")
+            val ovmfVars = findOVMFFirmware("OVMF_VARS.fd", "OVMF_VARS.secboot.fd")
+            
+            if (ovmfCode != null && ovmfVars != null) {
+                // Use pflash for UEFI firmware (more modern approach)
+                add("-drive")
+                add("file=$ovmfCode,format=raw,if=pflash,unit=0,readonly=on")
+                add("-drive")
+                add("file=$ovmfVars,format=raw,if=pflash,unit=1")
+                println("[VMManager] Using UEFI firmware: $ovmfCode")
+            } else {
+                // Fallback: try to use -bios if available
+                val biosPath = findOVMFFirmware("OVMF.fd", "bios.bin")
+                if (biosPath != null) {
+                    add("-bios")
+                    add(biosPath)
+                    println("[VMManager] Using BIOS firmware: $biosPath")
+                } else {
+                    println("[VMManager] No UEFI firmware found, using default BIOS")
+                }
+            }
+            
             add("-drive")
             add("file=${diskImage.absolutePath},format=qcow2")
             
@@ -237,6 +314,12 @@ class VMManager {
                             "Could not read output stream: ${e.message}"
                         }
                         
+                        // Check if it's a snapshot-related error
+                        val isSnapshotError = error.contains("snapshot") || error.contains("Snapshot") || 
+                                            error.contains("loadvm") || error.contains("does not exist") ||
+                                            output.contains("snapshot") || output.contains("Snapshot") ||
+                                            output.contains("loadvm") || output.contains("does not exist")
+                        
                         // Provide helpful error message for VNC issues
                         if (error.contains("vnc") || error.contains("invalid option") || output.contains("vnc")) {
                             throw IOException(
@@ -246,6 +329,17 @@ class VMManager {
                                 "Output: $output\n" +
                                 "Command: ${command.joinToString(" ")}\n" +
                                 "Please ensure QEMU has VNC support (standard QEMU builds include it).",
+                                null
+                            )
+                        }
+                        
+                        // Throw snapshot error that can be caught and handled
+                        if (isSnapshotError && stateName != null) {
+                            throw IOException(
+                                "QEMU snapshot restore failed (exit code $exitCode). Snapshot: $stateName\n" +
+                                "Error: $error\n" +
+                                "Output: $output\n" +
+                                "Command: ${command.joinToString(" ")}",
                                 null
                             )
                         }
@@ -385,6 +479,82 @@ class VMManager {
         if (monitorPort != null) {
             sendMonitorCommandTCP(monitorPort, "savevm $stateName")
         }
+    }
+    
+    fun deleteSnapshot(blockPos: BlockPos, snapshotName: String) {
+        val monitorPort = vmMonitorPorts[blockPos]
+        val stateDir = getVMStateDirectory(blockPos)
+        val diskImage = stateDir.resolve("disk.qcow2").toFile()
+        
+        if (monitorPort != null && diskImage.exists()) {
+            try {
+                // Try to delete via QEMU monitor first
+                sendMonitorCommandTCP(monitorPort, "delvm $snapshotName")
+                println("[VMManager] Deleted snapshot '$snapshotName' via QEMU monitor")
+            } catch (e: Exception) {
+                println("[VMManager] Could not delete snapshot via monitor, trying qemu-img: ${e.message}")
+                // Fallback: use qemu-img to delete snapshot
+                try {
+                    val qemuImgPath = qemuPath?.replace("qemu-system-x86_64", "qemu-img")
+                        ?: qemuPath?.replace("qemu-system-x86_64.exe", "qemu-img.exe")
+                        ?: "qemu-img"
+                    
+                    val command = listOf(
+                        qemuImgPath,
+                        "snapshot",
+                        "-d",
+                        snapshotName,
+                        diskImage.absolutePath
+                    )
+                    
+                    val process = ProcessBuilder(command).start()
+                    val exitCode = process.waitFor()
+                    if (exitCode == 0) {
+                        println("[VMManager] Deleted snapshot '$snapshotName' via qemu-img")
+                    } else {
+                        val error = process.errorStream.bufferedReader().readText()
+                        println("[VMManager] Failed to delete snapshot via qemu-img: $error")
+                    }
+                } catch (e2: Exception) {
+                    println("[VMManager] Failed to delete snapshot: ${e2.message}")
+                }
+            }
+        }
+    }
+    
+    fun deleteVM(blockPos: BlockPos) {
+        println("[VMManager] Deleting VM and all state for block at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}")
+        
+        // Stop VM if running
+        stopVM(blockPos)
+        
+        // Remove from tracking maps
+        runningVMs.remove(blockPos)
+        vmPorts.remove(blockPos)
+        vmQMPPorts.remove(blockPos)
+        vmMonitorPorts.remove(blockPos)
+        
+        // Delete VM state directory and all files
+        val stateDir = getVMStateDirectory(blockPos)
+        if (Files.exists(stateDir)) {
+            try {
+                Files.walk(stateDir)
+                    .sorted(Comparator.reverseOrder())
+                    .forEach { path ->
+                        try {
+                            Files.delete(path)
+                        } catch (e: Exception) {
+                            println("[VMManager] Failed to delete ${path}: ${e.message}")
+                        }
+                    }
+                println("[VMManager] Deleted VM state directory: $stateDir")
+            } catch (e: Exception) {
+                System.err.println("[VMManager] Failed to delete VM state directory: ${e.message}")
+                e.printStackTrace()
+            }
+        }
+        
+        println("[VMManager] VM cleanup complete for block at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}")
     }
 
     @Suppress("SameParameterValue")

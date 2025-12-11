@@ -141,12 +141,26 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) : BlockEntity(
     }
 
     fun onRemoved() {
+        println("[ComputerBlockEntity] Block removed at ${blockPos.x}, ${blockPos.y}, ${blockPos.z} - cleaning up VM and state")
+        
+        // Stop VM if running
         if (isRunning) {
             stopVM()
         }
+        
+        // Disconnect VNC client
         vncClient?.disconnect()
+        vncClient = null
         inputHandler = null
         focusedPlayer = null
+        
+        // Clean up VM state directory and all files
+        vmManager?.deleteVM(blockPos)
+        
+        // Clean up state manager
+        stateManager?.cleanup()
+        
+        println("[ComputerBlockEntity] Cleanup complete for block at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}")
     }
 
     private fun startVM() {
@@ -155,13 +169,39 @@ class ComputerBlockEntity(pos: BlockPos, state: BlockState) : BlockEntity(
         try {
             println("[ComputerBlockEntity] Server: Starting VM at ${blockPos.x}, ${blockPos.y}, ${blockPos.z}")
             val stateName = stateManager!!.getStateName()
-            vncPort = vmManager!!.startVM(
-                blockPos = blockPos,
-                stateName = stateName.ifEmpty { null }
-            )
+            
+            // Try to start VM with snapshot
+            var snapshotFailed = false
+            try {
+                vncPort = vmManager!!.startVM(
+                    blockPos = blockPos,
+                    stateName = stateName.ifEmpty { null }
+                )
+            } catch (e: Exception) {
+                // If snapshot restore failed, try deleting the snapshot and starting fresh
+                if (stateName.isNotEmpty() && (e.message?.contains("snapshot") == true || 
+                    e.message?.contains("Snapshot") == true || 
+                    e.message?.contains("loadvm") == true)) {
+                    println("[ComputerBlockEntity] Server: Snapshot restore failed, deleting snapshot and retrying: ${e.message}")
+                    snapshotFailed = true
+                    vmManager!!.deleteSnapshot(blockPos, stateName)
+                    // Retry without snapshot
+                    vncPort = vmManager!!.startVM(
+                        blockPos = blockPos,
+                        stateName = null
+                    )
+                } else {
+                    throw e // Re-throw if it's not a snapshot-related error
+                }
+            }
+            
             if (vncPort > 0) {
                 isRunning = true
-                println("[ComputerBlockEntity] Server: VM started successfully on VNC port $vncPort")
+                if (snapshotFailed) {
+                    println("[ComputerBlockEntity] Server: VM started successfully on VNC port $vncPort (after snapshot deletion)")
+                } else {
+                    println("[ComputerBlockEntity] Server: VM started successfully on VNC port $vncPort")
+                }
                 println("[ComputerBlockEntity] Server: VNC server should be available at 127.0.0.1:$vncPort")
                 setChanged()
                 // Send update packet to clients
