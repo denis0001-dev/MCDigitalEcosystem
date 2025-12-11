@@ -289,12 +289,12 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
         RenderSystem.disableCull() // Render both sides to prevent culling issues
         
         // Monitor screen position based on the model (fixed coordinates in model space):
-        // X: 0.5 to 15.5 (full width with small margin)
+        // X: 1.0 to 15.0 (narrower width to fit inside the frame better)
         // Y: 3.3 to 10.7 (between top and bottom frames)
         // Z: 3.25 (slightly forward of the black frame at 3.2/16)
         // Since the pose stack is already rotated, we use fixed model-space coordinates
-        val screenXMin = 0.5f / 16.0f  // 0.03125
-        val screenXMax = 15.5f / 16.0f // 0.96875
+        val screenXMin = 1.0f / 16.0f  // 0.0625 (narrower left margin)
+        val screenXMax = 15.0f / 16.0f // 0.9375 (narrower right margin)
         val screenYMin = 3.3f / 16.0f  // 0.20625
         val screenYMax = 10.7f / 16.0f // 0.66875
         val screenZ = 3.25f / 16.0f    // 0.203125 (slightly forward of frame at 3.2/16)
