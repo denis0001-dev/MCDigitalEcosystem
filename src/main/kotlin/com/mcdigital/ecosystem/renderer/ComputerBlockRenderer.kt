@@ -172,17 +172,17 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
         poseStack.translate(0.5, 0.0, 0.5)
         
         // Calculate rotation based on facing direction (matching blockstate)
+        // Add 180 degrees offset if the model's default orientation is backwards
         val rotationY = when (facing) {
-            Direction.NORTH -> 0f
-            Direction.SOUTH -> 180f
-            Direction.WEST -> 90f
-            Direction.EAST -> 270f
-            else -> 0f
+            Direction.NORTH -> 180f  // 0 + 180
+            Direction.SOUTH -> 0f    // 180 + 180 = 360 = 0
+            Direction.WEST -> 270f  // 90 + 180 = 270
+            Direction.EAST -> 90f   // 270 + 180 = 450 = 90
+            else -> 180f
         }
         
-        // Apply rotation - try normal direction first
-        // If still wrong, the model might need: -rotationY or (rotationY + 180) % 360
-        poseStack.mulPose(Axis.YP.rotationDegrees(rotationY))
+        // Apply rotation inverted (clockwise instead of counter-clockwise)
+        poseStack.mulPose(Axis.YP.rotationDegrees(-rotationY))
         
         poseStack.translate(-0.5, 0.0, -0.5)
         
@@ -256,7 +256,8 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
         if (textureLocation != null) {
             // Render screen overlay at fixed position (front face in model space)
             // The rotation already applied to poseStack will handle orientation
-            renderScreenOverlay(poseStack, buffer, textureLocation, Direction.NORTH, packedLight, packedOverlay)
+            // Since the pose stack is rotated, we use fixed model-space coordinates
+            renderScreenOverlay(poseStack, buffer, textureLocation, packedLight, packedOverlay)
         }
         
         poseStack.popPose()
@@ -266,7 +267,6 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
         poseStack: PoseStack,
         buffer: MultiBufferSource,
         textureLocation: ResourceLocation,
-        facing: Direction,
         packedLight: Int,
         packedOverlay: Int
     ) {
@@ -288,40 +288,16 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
         RenderSystem.defaultBlendFunc() // Standard alpha blending
         RenderSystem.disableCull() // Render both sides to prevent culling issues
         
-        // Monitor screen position based on the model:
-        // Monitor base: [0.5, 3, 1.9] to [15.5, 11, 3]
-        // Black frame top: [0.5, 3, 2.9] to [15.5, 3.3, 3.2]
-        // Black frame bottom: [0.5, 10.7, 3] to [15.5, 11, 3.3]
-        // Screen area is between the frames, slightly forward to avoid overlap
+        // Monitor screen position based on the model (fixed coordinates in model space):
         // X: 0.5 to 15.5 (full width with small margin)
         // Y: 3.3 to 10.7 (between top and bottom frames)
-        // Z: 3.2 (slightly forward of the black frame at 2.9-3.2)
+        // Z: 3.25 (slightly forward of the black frame at 3.2/16)
+        // Since the pose stack is already rotated, we use fixed model-space coordinates
         val screenXMin = 0.5f / 16.0f  // 0.03125
         val screenXMax = 15.5f / 16.0f // 0.96875
         val screenYMin = 3.3f / 16.0f  // 0.20625
         val screenYMax = 10.7f / 16.0f // 0.66875
         val screenZ = 3.25f / 16.0f    // 0.203125 (slightly forward of frame at 3.2/16)
-        
-        // Adjust coordinates based on facing direction
-        val (x1, x2, z) = when (facing) {
-            Direction.NORTH -> {
-                // Screen faces north (negative Z), so Z should be small
-                Triple(screenXMin, screenXMax, screenZ)
-            }
-            Direction.SOUTH -> {
-                // Screen faces south (positive Z), so Z should be large
-                Triple(1f - screenXMax, 1f - screenXMin, 1f - screenZ)
-            }
-            Direction.WEST -> {
-                // Screen faces west (negative X), so X should be small
-                Triple(screenZ, screenZ, screenXMin)
-            }
-            Direction.EAST -> {
-                // Screen faces east (positive X), so X should be large
-                Triple(1f - screenZ, 1f - screenZ, screenXMax)
-            }
-            else -> Triple(screenXMin, screenXMax, screenZ)
-        }
         
         // Use translucent render type for proper transparency handling
         val consumer = buffer.getBuffer(RenderType.entityTranslucent(textureLocation))
@@ -329,34 +305,13 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
         val normal = poseStack.last().normal()
         
         // Render quad for screen - positioned to match the monitor screen area
+        // The pose stack is already rotated, so we use fixed model-space coordinates
         // UV coordinates: (0,1) bottom-left, (1,1) bottom-right, (1,0) top-right, (0,0) top-left
-        when (facing) {
-            Direction.NORTH -> {
-                addVertex(consumer, matrix, normal, x1, screenYMin, z, 0f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x2, screenYMin, z, 1f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x2, screenYMax, z, 1f, 0f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMax, z, 0f, 0f, packedLight, packedOverlay)
-            }
-            Direction.SOUTH -> {
-                addVertex(consumer, matrix, normal, x1, screenYMin, z, 1f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x2, screenYMin, z, 0f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x2, screenYMax, z, 0f, 0f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMax, z, 1f, 0f, packedLight, packedOverlay)
-            }
-            Direction.WEST -> {
-                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMin, 0f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMax, 1f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMax, 1f, 0f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMin, 0f, 0f, packedLight, packedOverlay)
-            }
-            Direction.EAST -> {
-                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMax, 1f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMin, 0f, 1f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMin, 0f, 0f, packedLight, packedOverlay)
-                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMax, 1f, 0f, packedLight, packedOverlay)
-            }
-            else -> {}
-        }
+        // Always render on the "front" face in model local coordinates (positive Z)
+        addVertex(consumer, matrix, normal, screenXMin, screenYMin, screenZ, 0f, 1f, packedLight, packedOverlay)
+        addVertex(consumer, matrix, normal, screenXMax, screenYMin, screenZ, 1f, 1f, packedLight, packedOverlay)
+        addVertex(consumer, matrix, normal, screenXMax, screenYMax, screenZ, 1f, 0f, packedLight, packedOverlay)
+        addVertex(consumer, matrix, normal, screenXMin, screenYMax, screenZ, 0f, 0f, packedLight, packedOverlay)
         
         // Restore render state
         RenderSystem.enableCull()
