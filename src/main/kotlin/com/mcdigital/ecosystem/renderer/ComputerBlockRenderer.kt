@@ -5,6 +5,8 @@ import com.mojang.blaze3d.platform.NativeImage
 import com.mojang.blaze3d.systems.RenderSystem
 import com.mojang.blaze3d.vertex.PoseStack
 import com.mojang.blaze3d.vertex.VertexConsumer
+import com.mojang.math.Axis
+import net.minecraft.client.Minecraft
 import net.minecraft.client.renderer.GameRenderer
 import net.minecraft.client.renderer.MultiBufferSource
 import net.minecraft.client.renderer.RenderType
@@ -12,6 +14,7 @@ import net.minecraft.client.renderer.blockentity.BlockEntityRenderer
 import net.minecraft.client.renderer.texture.DynamicTexture
 import net.minecraft.core.Direction
 import net.minecraft.resources.ResourceLocation
+import net.minecraftforge.client.model.data.ModelData
 import org.joml.Matrix4f
 import java.awt.image.BufferedImage
 import java.util.concurrent.ConcurrentHashMap
@@ -25,14 +28,14 @@ class ScreenTexture(private val blockEntity: ComputerBlockEntity) {
     
     fun initializeIfNeeded() {
         if (!initialized && texture == null) {
-            // Create a default texture with a visible placeholder (black with slight transparency)
-            // This ensures something is visible even before frames arrive
-            val width = 64
-            val height = 64
-            val nativeImage = NativeImage(width, height, true) // true = use alpha channel
+            // Create a default texture - use a proper size (power of 2) and fully opaque black
+            // This prevents green particles (missing texture indicator)
+            val width = 256
+            val height = 256
+            val nativeImage = NativeImage(width, height, false) // false = no alpha channel needed
             
-            // Fill with a dark gray color (slightly visible) so we know the texture is working
-            val placeholderColor = 0x80000000.toInt() // Dark gray with 50% opacity
+            // Fill with fully opaque black (no transparency)
+            val placeholderColor = 0xFF000000.toInt() // Fully opaque black
             for (y in 0 until height) {
                 for (x in 0 until width) {
                     nativeImage.setPixelRGBA(x, y, placeholderColor)
@@ -146,54 +149,124 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
         packedLight: Int,
         packedOverlay: Int
     ) {
-        // Always ensure we have a texture
-        val screenTexture = ComputerBlockRendererHelper.getScreenTexture(blockEntity)
-            ?: ComputerBlockRendererHelper.getOrCreateDefaultTexture(blockEntity)
-
-        val textureLocation = screenTexture.getTextureLocation() ?: return // Last resort: skip rendering this frame
-
+        val minecraft = Minecraft.getInstance()
+        val blockRenderer = minecraft.blockRenderer
+        val state = blockEntity.blockState
+        
         poseStack.pushPose()
         
-        val state = blockEntity.blockState
+        // Get facing direction
         val facing = if (state.hasProperty(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)) {
             state.getValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING)
         } else {
             Direction.NORTH
         }
         
-        // Translate to center of block
-        poseStack.translate(0.5, 0.5, 0.5)
+        // Rotate the model to match the block's facing direction
+        // When using RenderShape.ENTITYBLOCK_ANIMATED, we need to manually apply rotations
+        // The blockstate defines rotations, but BlockModelShaper.stateToModelLocation
+        // already selects the correct variant, so we might not need to rotate manually
         
-        // Rotate to face the correct direction
-        when (facing) {
-            Direction.NORTH -> {
-                // Default orientation - screen faces north (negative Z)
-            }
-            Direction.SOUTH -> {
-                poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180f))
-            }
-            Direction.WEST -> {
-                poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(90f))
-            }
-            Direction.EAST -> {
-                poseStack.mulPose(com.mojang.math.Axis.YP.rotationDegrees(-90f))
-            }
-            else -> {}
+        // However, since we're using BlockModelRenderer directly, we need to apply rotation
+        // Center the model for rotation
+        poseStack.translate(0.5, 0.0, 0.5)
+        
+        // Calculate rotation based on facing direction (matching blockstate)
+        val rotationY = when (facing) {
+            Direction.NORTH -> 0f
+            Direction.SOUTH -> 180f
+            Direction.WEST -> 90f
+            Direction.EAST -> 270f
+            else -> 0f
         }
         
-        // Translate back and position for front face
-        poseStack.translate(-0.5, -0.5, -0.5)
+        // Apply rotation - try normal direction first
+        // If still wrong, the model might need: -rotationY or (rotationY + 180) % 360
+        poseStack.mulPose(Axis.YP.rotationDegrees(rotationY))
         
-        // Render front face with screen texture
-        renderScreenFace(poseStack, buffer, textureLocation, packedLight, packedOverlay)
+        poseStack.translate(-0.5, 0.0, -0.5)
+        
+        // Render the block model using BlockModelRenderer directly
+        // This is the lower-level method that renders model quads
+        val level = blockEntity.level
+        if (level != null) {
+            val modelManager = minecraft.modelManager
+            // Use the base model (north-facing variant) and apply rotation manually
+            // This ensures we have full control over the rotation
+            val baseState = state.setValue(net.minecraft.world.level.block.state.properties.BlockStateProperties.HORIZONTAL_FACING, Direction.NORTH)
+            val modelLocation = net.minecraft.client.renderer.block.BlockModelShaper.stateToModelLocation(baseState)
+            val model = modelManager.getModel(modelLocation)
+            val modelData = ModelData.EMPTY
+            val random = net.minecraft.util.RandomSource.create()
+            val modelRenderer = minecraft.blockRenderer.modelRenderer
+            
+            // Get all render types for this model
+            val renderTypes = model.getRenderTypes(state, random, modelData)
+            
+            // Render with each render type using BlockModelRenderer
+            // Render in order: solid first, then cutout, then translucent
+            val sortedRenderTypes = renderTypes.sortedBy { renderType ->
+                when {
+                    renderType == RenderType.solid() -> 0
+                    renderType == RenderType.cutout() -> 1
+                    renderType == RenderType.translucent() -> 2
+                    else -> 3
+                }
+            }
+            
+            for (renderType in sortedRenderTypes) {
+                val vertexConsumer = buffer.getBuffer(renderType)
+                modelRenderer.renderModel(
+                    poseStack.last(),
+                    vertexConsumer,
+                    state,
+                    model,
+                    1.0f, 1.0f, 1.0f, // Red, Green, Blue
+                    packedLight,
+                    packedOverlay,
+                    modelData,
+                    renderType
+                )
+            }
+            
+            // If no render types, render with solid as fallback
+            if (renderTypes.isEmpty()) {
+                val vertexConsumer = buffer.getBuffer(RenderType.solid())
+                modelRenderer.renderModel(
+                    poseStack.last(),
+                    vertexConsumer,
+                    state,
+                    model,
+                    1.0f, 1.0f, 1.0f,
+                    packedLight,
+                    packedOverlay,
+                    modelData,
+                    RenderType.solid()
+                )
+            }
+        }
+        
+        // Now overlay the screen texture
+        // Note: The pose stack is already rotated, so we render the screen at a fixed position
+        // in model space (on the front face, which is NORTH in model coordinates)
+        val screenTexture = ComputerBlockRendererHelper.getScreenTexture(blockEntity)
+            ?: ComputerBlockRendererHelper.getOrCreateDefaultTexture(blockEntity)
+
+        val textureLocation = screenTexture.getTextureLocation()
+        if (textureLocation != null) {
+            // Render screen overlay at fixed position (front face in model space)
+            // The rotation already applied to poseStack will handle orientation
+            renderScreenOverlay(poseStack, buffer, textureLocation, Direction.NORTH, packedLight, packedOverlay)
+        }
         
         poseStack.popPose()
     }
     
-    private fun renderScreenFace(
+    private fun renderScreenOverlay(
         poseStack: PoseStack,
         buffer: MultiBufferSource,
         textureLocation: ResourceLocation,
+        facing: Direction,
         packedLight: Int,
         packedOverlay: Int
     ) {
@@ -208,28 +281,86 @@ class ComputerBlockRenderer() : BlockEntityRenderer<ComputerBlockEntity> {
             return
         }
         
-        RenderSystem.enableBlend()
-        RenderSystem.defaultBlendFunc()
+        // Enable proper depth testing and blending for the screen overlay
         RenderSystem.enableDepthTest()
-        RenderSystem.depthMask(false) // Allow transparency
+        RenderSystem.depthMask(true) // Write to depth buffer to prevent z-fighting
+        RenderSystem.enableBlend()
+        RenderSystem.defaultBlendFunc() // Standard alpha blending
+        RenderSystem.disableCull() // Render both sides to prevent culling issues
         
-        val matrix = poseStack.last().pose()
-        val normal = poseStack.last().normal()
+        // Monitor screen position based on the model:
+        // Monitor base: [0.5, 3, 1.9] to [15.5, 11, 3]
+        // Black frame top: [0.5, 3, 2.9] to [15.5, 3.3, 3.2]
+        // Black frame bottom: [0.5, 10.7, 3] to [15.5, 11, 3.3]
+        // Screen area is between the frames, slightly forward to avoid overlap
+        // X: 0.5 to 15.5 (full width with small margin)
+        // Y: 3.3 to 10.7 (between top and bottom frames)
+        // Z: 3.2 (slightly forward of the black frame at 2.9-3.2)
+        val screenXMin = 0.5f / 16.0f  // 0.03125
+        val screenXMax = 15.5f / 16.0f // 0.96875
+        val screenYMin = 3.3f / 16.0f  // 0.20625
+        val screenYMax = 10.7f / 16.0f // 0.66875
+        val screenZ = 3.25f / 16.0f    // 0.203125 (slightly forward of frame at 3.2/16)
         
-        // Front face - render slightly in front of block face (z = 0.501)
-        val z = 0.501f
+        // Adjust coordinates based on facing direction
+        val (x1, x2, z) = when (facing) {
+            Direction.NORTH -> {
+                // Screen faces north (negative Z), so Z should be small
+                Triple(screenXMin, screenXMax, screenZ)
+            }
+            Direction.SOUTH -> {
+                // Screen faces south (positive Z), so Z should be large
+                Triple(1f - screenXMax, 1f - screenXMin, 1f - screenZ)
+            }
+            Direction.WEST -> {
+                // Screen faces west (negative X), so X should be small
+                Triple(screenZ, screenZ, screenXMin)
+            }
+            Direction.EAST -> {
+                // Screen faces east (positive X), so X should be large
+                Triple(1f - screenZ, 1f - screenZ, screenXMax)
+            }
+            else -> Triple(screenXMin, screenXMax, screenZ)
+        }
         
         // Use translucent render type for proper transparency handling
         val consumer = buffer.getBuffer(RenderType.entityTranslucent(textureLocation))
+        val matrix = poseStack.last().pose()
+        val normal = poseStack.last().normal()
         
-        // Render quad for screen - stretched to fill front face
-        // Note: UV coordinates are flipped (v: 1f, 0f) to match Minecraft's texture coordinate system
-        addVertex(consumer, matrix, normal, 0.0f, 0.0f, z, 0f, 1f, packedLight, packedOverlay)
-        addVertex(consumer, matrix, normal, 1.0f, 0.0f, z, 1f, 1f, packedLight, packedOverlay)
-        addVertex(consumer, matrix, normal, 1.0f, 1.0f, z, 1f, 0f, packedLight, packedOverlay)
-        addVertex(consumer, matrix, normal, 0.0f, 1.0f, z, 0f, 0f, packedLight, packedOverlay)
+        // Render quad for screen - positioned to match the monitor screen area
+        // UV coordinates: (0,1) bottom-left, (1,1) bottom-right, (1,0) top-right, (0,0) top-left
+        when (facing) {
+            Direction.NORTH -> {
+                addVertex(consumer, matrix, normal, x1, screenYMin, z, 0f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x2, screenYMin, z, 1f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x2, screenYMax, z, 1f, 0f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMax, z, 0f, 0f, packedLight, packedOverlay)
+            }
+            Direction.SOUTH -> {
+                addVertex(consumer, matrix, normal, x1, screenYMin, z, 1f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x2, screenYMin, z, 0f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x2, screenYMax, z, 0f, 0f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMax, z, 1f, 0f, packedLight, packedOverlay)
+            }
+            Direction.WEST -> {
+                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMin, 0f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMax, 1f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMax, 1f, 0f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMin, 0f, 0f, packedLight, packedOverlay)
+            }
+            Direction.EAST -> {
+                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMax, 1f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMin, screenXMin, 0f, 1f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMin, 0f, 0f, packedLight, packedOverlay)
+                addVertex(consumer, matrix, normal, x1, screenYMax, screenXMax, 1f, 0f, packedLight, packedOverlay)
+            }
+            else -> {}
+        }
         
-        RenderSystem.depthMask(true) // Restore depth mask
+        // Restore render state
+        RenderSystem.enableCull()
+        RenderSystem.depthMask(true)
     }
     
     @Suppress("SameParameterValue")

@@ -21,10 +21,17 @@ import net.minecraft.world.level.block.state.StateDefinition
 import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.block.state.properties.DirectionProperty
 import net.minecraft.world.phys.BlockHitResult
+import net.minecraft.world.phys.shapes.Shapes
+import net.minecraft.world.phys.shapes.VoxelShape
 
 class ComputerBlock : BaseEntityBlock(Properties.of().strength(2.0f).noOcclusion()) {
     companion object {
         val FACING: DirectionProperty = BlockStateProperties.HORIZONTAL_FACING
+        
+        // Hitbox: covers the full block (0,0,0 to 16,16,16 in voxel coordinates)
+        // The model extends from y=0 to y=11 (monitor) and has keyboard at y=0-1
+        // Using full block hitbox for simplicity
+        private val SHAPE = Shapes.block()
     }
     
     init {
@@ -64,6 +71,15 @@ class ComputerBlock : BaseEntityBlock(Properties.of().strength(2.0f).noOcclusion
 
     override fun getRenderShape(state: BlockState): RenderShape {
         return RenderShape.ENTITYBLOCK_ANIMATED
+    }
+    
+    override fun getShape(
+        state: BlockState,
+        level: net.minecraft.world.level.BlockGetter,
+        pos: BlockPos,
+        context: net.minecraft.world.phys.shapes.CollisionContext
+    ): VoxelShape {
+        return SHAPE
     }
 
     override fun use(

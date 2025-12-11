@@ -131,7 +131,7 @@ class VMManager {
         val stateDir = getVMStateDirectory(blockPos)
         Files.createDirectories(stateDir)
 
-        val config = VMConfig.getDefaultConfig()
+        val config = VMConfig()
         val diskImage = stateDir.resolve("disk.qcow2").toFile()
         
         // Create disk image if it doesn't exist
